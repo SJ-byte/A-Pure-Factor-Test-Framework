@@ -9,15 +9,8 @@ from sklearn import datasets, linear_model
 from scipy.optimize import minimize 
 
 #In order to make the program faster, we can try to calculate the Beta first and write to CSV, and then read the csv in
-#Stop Loss Function, only stop loss, don't stop winning
-def stoploss(context,bar_dict):
-    for stock in context.stocks:
-        if bar_dict[stock].last<context.portfolio.positions[stock].average_cost*context.stoplossmultipler:
-            order_target_percent(stock,0)
-        elif bar_dict[stock].last>context.portfolio.positions[stock].average_cost*context.stoppofitmultipler:
-            order_target_percent(stock,0)
 
-    
+############################Define our factors####################################### 
 def RSIIndividual(stock,end):
     window_length = 14
     start = "{:%Y-%m-%d}".format(datetime.datetime.strptime(end, '%Y-%m-%d') - datetime.timedelta(days=window_length))
@@ -128,7 +121,7 @@ def sharpe(stock,end):
     else:
         return pd.Series(-1000, index = ['000001.XSHE'])
         
-
+############################Define functions to get IC and Beta######################
 def GetIC(f,*args):
     FactorValue = f(*args)
     stock = args[0]
@@ -139,8 +132,8 @@ def GetIC(f,*args):
     DataAll = DataAll.dropna()
     return np.corrcoef(np.array(DataAll.ix[:,0].T.rank().T),np.array(DataAll.ix[:,1].T.rank().T))[0,1]
 
+##################Get Historical Beta and Residuals to calculate Risk##############
 #In order to get daily Beta and Residuals, we can change the enddate from monthly to daily
-#Here we test it as Monthly
 def GetBeta(f,*args):
     FactorValue = f(*args)
     stock = args[0]
@@ -165,9 +158,7 @@ def GetBeta(f,*args):
     return regr.coef_
 
 def GetResiduals(stock,enddate,Xinput):
-    #print(enddate)
-    #print(EquityOCFP(stock,enddate))
-    X = pd.concat(Xinput, axis=1)
+    X = Xinput
     dim = X.shape
     length = dim[0]
     nfactors = dim[1]
@@ -176,6 +167,10 @@ def GetResiduals(stock,enddate,Xinput):
     y = np.log(tempprice.iloc[-1]/tempprice.iloc[0])
     DataAll = pd.concat([X,y],axis = 1)
     DataAll = DataAll.dropna()
+    DataAll.columns = list(range(0,nfactors+1))
+    #print(DataAll.iloc[0:5])
+    #print(np.matrix(DataAll.ix[:,0:nfactors]))
+    #print(np.transpose(np.matrix(DataAll.ix[:,nfactors])))
     regr = linear_model.LinearRegression()
     regr.fit(np.matrix(DataAll.ix[:,0:nfactors]), np.transpose(np.matrix(DataAll.ix[:,nfactors])))
     residuals = regr.predict(np.matrix(DataAll.ix[:,0:nfactors])) - np.transpose(np.matrix(DataAll.ix[:,nfactors]))
@@ -184,28 +179,6 @@ def GetResiduals(stock,enddate,Xinput):
     residuals.columns = [enddate]
     return residuals
 
-#This function is used in the later function
-def lamtotal(lam,h):
-    total = 0
-    for i in list(range(h,-1,-1)):
-        total = total + lam ** (i)
-    return total
-
-#input as Series, date of series should be increasing
-#We also need to deal with isnan here, modify this part later
-def EWMA(Series1,Series2,lam,h):
-    Sm1 = np.mean(Series1)
-    Sm2 = np.mean(Series2)
-    l1 = len(Series1)
-    l2 = len(Series2)
-    total = 0
-    for i in list(range(h,0,-1)):
-        #print(Series1.iloc[l1-i])
-        #if ~np.isnan(Series1.iloc[l1-i])&~np.isnan(Series1.iloc[l1-i]):
-        total = total + ((lam ** i) *(Series1.iloc[l1-i] - Sm1)*(Series2.iloc[l1-i] - Sm2))
-    total = total/lamtotal(lam,i)
-    return total
-    
 def GetBetaCovEsti(i,lam,h,BetaAll):
     dim = BetaAll.T.shape
     #print(dim)
@@ -243,50 +216,103 @@ def GetIndRiskCovEsti(i,lam,h,ResidualAll):
         CovEsti.ix[i-1,i-1] = tempresult
     return CovEsti
 
+#######################Some tools that is used in the previous functions#############
+#This function is used in the later function
+def lamtotal(lam,h):
+    total = 0
+    for i in list(range(h,-1,-1)):
+        total = total + lam ** (i)
+    return total
 
-def adjust_future(context, bar_dict):
-    portfolio_value = context.portfolio.portfolio_value* context.position_limit 
-    order_target_value("510300.XSHG", -(portfolio_value))
+#input as Series, date of series should be increasing
+#We also need to deal with isnan here, modify this part later
+def EWMA(Series1,Series2,lam,h):
+    Sm1 = np.mean(Series1)
+    Sm2 = np.mean(Series2)
+    l1 = len(Series1)
+    l2 = len(Series2)
+    total = 0
+    for i in list(range(h,0,-1)):
+        #print(Series1.iloc[l1-i])
+        #if ~np.isnan(Series1.iloc[l1-i])&~np.isnan(Series1.iloc[l1-i]):
+        total = total + ((lam ** i) *(Series1.iloc[l1-i] - Sm1)*(Series2.iloc[l1-i] - Sm2))
+    total = total/lamtotal(lam,i)
+    return total
+    
+##########################Get the exposure on factors of indices####################
+#######For Hedging purpose, get the number of the factors in our input
+def NumberofArgs(*args):
+    for i in list(range(0,1000)):
+        try:
+            args[i]
+        except:
+            break
+    return i
 
+############################Get the exposre on a factor########################
+def GetIndSinExp(f,*args):
+    return f(*args)
+
+#Get the exposure of all factors
+#Here the stock should be the compoment of the index that we want to use to hedge
+def GetIndAllExp(stock,enddate,*args):
+    OutValue = []
+    for arg in args[0]:
+        temp = arg(stock,enddate)
+        OutValue.append(np.mean(temp.values))
+    return OutValue
+
+##########################Get the Beta in the history
+def GetAllBeta(stock,enddate,*args):
+    OutValue = []
+    for arg in args[0]:
+        OutValue.extend(GetBeta(arg,stock,enddate).tolist()[0])
+    return OutValue
+
+########################Get Factor Exposure at a specific date
+def GetAllFactorExposure(stock,enddate,*args):  #Output is directly dataframe
+    OutValue = []
+    flag = 1
+    for arg in args[0]:
+        if flag == 1:
+            OutValue = pd.DataFrame(arg(stock,enddate))
+            flag = 0
+        else:
+            OutValue = pd.concat([OutValue,arg(stock,enddate)],axis = 1)
+    OutValue.columns = list(range(1,len(args[0])+1))
+    return OutValue
 
 def choose_stocks(context,bar_dict):
+    #########################Get the exposure of factors on this stock#######
+    end = "{:%Y-%m-%d}".format(get_previous_trading_date(context.now))    
+    index = '000016.XSHG'  #this is the index for hedging
+    hedgingstocks = index_components(index)  #this is the stocks we use for hedging purpose
     
-    AllStock = index_components('000300.XSHG')
+    MyFactors = [RSIIndividual,Min130Day,EquitySize,EquityOCFP,PricetoLowest,sharpe]
+    Exposure = GetIndAllExp(hedgingstocks,end,MyFactors) #this is used for later hedging purpose
+    
+    AllStock = index_components('000300.XSHG') #this is the stock pool for selection
     stock = AllStock
     #########################Get the list of Beta to calculate new BetaCov##########
-    end = "{:%Y-%m-%d}".format(get_previous_trading_date(context.now))
     enddatel = []
-    for i in list(range(1,6)):
+    for i in list(range(1,10)):
         enddatel.append("{:%Y-%m-%d}".format(context.now - datetime.timedelta(days=(31*i))))
-    RSIBeta = pd.DataFrame()
-    MinBeta = pd.DataFrame()
-    SizeBeta = pd.DataFrame()
-    OCFPBeta = pd.DataFrame()
-    VolatilityBeta = pd.DataFrame()
-    PricetoLowestBeta = pd.DataFrame() #to 260 days' lowest
-    sharpeBeta = pd.DataFrame()
+    #Here to change the format, same column belong to a factor, same row belong to a time
+    
+    #we get the historical beta for all
+    AllHisBeta = pd.DataFrame(np.nan * np.ones([len(enddatel),len(MyFactors)]))
+    AllHisBeta.index = enddatel
+    count = 0
     for enddate in enddatel:
-        RSIBeta = pd.concat([RSIBeta,pd.DataFrame(GetBeta(RSIIndividual,stock,enddate))],axis = 1)
-        MinBeta = pd.concat([MinBeta,pd.DataFrame(GetBeta(Min130Day,stock,enddate))],axis = 1)
-        #print(EquitySize(stock,enddate))
-        SizeBeta = pd.concat([SizeBeta,pd.DataFrame(GetBeta(EquitySize,stock,enddate))],axis = 1)
-        OCFPBeta = pd.concat([OCFPBeta,pd.DataFrame(GetBeta(EquityOCFP,stock,enddate))],axis = 1)
-        #VolatilityBeta = pd.concat([VolatilityBeta,pd.DataFrame(GetBeta(Volatility,stock,enddate))],axis = 1)
-        PricetoLowestBeta = pd.concat([PricetoLowestBeta,pd.DataFrame(GetBeta(PricetoLowest,stock,enddate))],axis = 1)
-        sharpeBeta = pd.concat([sharpeBeta,pd.DataFrame(GetBeta(sharpe,stock,enddate))],axis = 1)
-    #RSIBeta.columns = enddatel
-    #MinBeta.columns = enddatel
-    #SizeBeta.columns = enddatel
-    #OCFPBeta.columns = enddatel
-    #RSIBeta.index = ['RSI']
-    #MinBeta.index = ['Min130']
-    #SizeBeta.index = ['Size']
-    #OCFPBeta.index = ['OCFP']
+        AllHisBeta.ix[count,:] = GetAllBeta(stock,enddate,MyFactors)
+        count = count + 1
 
     #########################Get All Residuals to calculate ResCov##############
+    #Here we only need to change the Xinput can be enough
     ResidualAll = pd.DataFrame()
     for enddate in enddatel:
-        Xinput = [EquityOCFP(stock,enddate), EquitySize(stock,enddate), RSIIndividual(stock,enddate), Min130Day(stock,enddate), PricetoLowest(stock,enddate), sharpe(stock,enddate)]
+        Xinput = GetAllFactorExposure(stock,enddate,MyFactors)
+        #print(Xinput.iloc[0:5])
         tempresidual = GetResiduals(stock,enddate,Xinput)
         ResidualAll = pd.concat([ResidualAll,tempresidual],axis = 1,join='outer')
     ResidualAll.columns = enddatel
@@ -295,50 +321,38 @@ def choose_stocks(context,bar_dict):
     #Get the Covariance Matrix of the Residuals
     ResidualCovh = ResidualAll.T.cov()
     #Get the Covariance Matrix of the Factor Earnings
-    BetaAll = pd.concat([RSIBeta,MinBeta,SizeBeta,OCFPBeta,VolatilityBeta,PricetoLowestBeta,sharpeBeta],axis = 0,join='outer')
-    BetaCovh = BetaAll.T.cov()
+    BetaAll = AllHisBeta
+    BetaCovh = BetaAll.cov()
 
-    ####################################optimize our portfolio#############
+    ############################optimize our portfolio##########################
     lam = 0.5
     h = 5
     endv = "{:%Y-%m-%d}".format(get_previous_trading_date(context.now))
     endb = "{:%Y-%m-%d}".format(context.now - datetime.timedelta(days=31))
+    
+    #If we use the EWMA Method
     BetaCov = GetBetaCovEsti(0,lam,h,BetaAll)
     IndCov = GetIndRiskCovEsti(0,lam,h,ResidualAll) 
-    #print(IndCov)
+    
+    #If we use the historical Method
+    BetaCov = BetaCovh
+    IndCov = ResidualCovh
+    
+    print(IndCov)
+    print(IndCov.shape)
     stock = IndCov.columns
-    #print('stock',stock.shape)
 
     StockNumber = IndCov.shape[1]
     #print(StockNumber)
     w = np.full((1, StockNumber), 1/StockNumber)
-    #print(stock)
-    RSIv = RSIIndividual(stock,endv)
-    Minv = Min130Day(stock,endv)
-    Sizev = EquitySize(stock,endv)
-    OCFPv = EquityOCFP(stock,endv)
-    #Volatilityv = Volatility(stock,endv)
-    PricetoLowestv = PricetoLowest(stock,endv)
-    sharpev = sharpe(stock,endv)
 
-    RSIb = GetBeta(RSIIndividual,stock,endb)
-    Minb = GetBeta(Min130Day,stock,endb)
-    Sizeb = GetBeta(EquitySize,stock,endb)
-    OCFPb = GetBeta(EquityOCFP,stock,endb)
-    #Volatilityb = GetBeta(Volatility,stock,endb)
-    PricetoLowestb = GetBeta(PricetoLowest,stock,endb)
-    sharpeb = GetBeta(sharpe,stock,endb)
-    
-    f = np.concatenate((RSIb,Minb,Sizeb,OCFPb,PricetoLowestb,sharpeb))
-    x = pd.concat((RSIv,Minv,Sizev,OCFPv,PricetoLowestv,sharpev),axis = 1)
+    f = np.asarray(GetAllBeta(stock,endb,MyFactors))
+    x = GetAllFactorExposure(stock,endv,MyFactors)
     x = x.fillna(0).as_matrix()
     StockReturn = np.matmul(x,f)
     #print(x.shape)
     FactorLoading = x
-    #print(BetaCov.shape)
-    #print(FactorLoading.shape)
-    #print(w.shape)
-    #print(IndCov.shape)
+
     #Tool Function
     def MyVar(w,BetaCov,ResidualCov,FactorLoading):
         part1 = np.matmul(FactorLoading,BetaCov)
@@ -360,9 +374,7 @@ def choose_stocks(context,bar_dict):
     cons = ({'type': 'eq',
              'fun' : lambda w: np.array(sum(w.T) - 1)},
            {'type': 'eq',
-             'fun' : lambda w: np.array(np.matmul(w,FactorLoading[:,-1]))})
-           #{'type': 'eq',
-            # 'fun' : lambda w: np.array(np.matmul(w,FactorLoading[:,4]))}             )
+             'fun' : lambda w: np.array(np.matmul(w,FactorLoading[:,-1])-Exposure[-1])})
     
     #bands that make sure we don't have weights too extrem
     bnds = ((0, 0.15),) * StockNumber
@@ -376,6 +388,7 @@ def choose_stocks(context,bar_dict):
     context.weight = w[w>np.percentile(w,95)]
     update_universe(context.stocks)
 
+#Get stocks that are currently trading to refine the pool of stock selection
 def get_trading_stocks(raw_stocks, bar_dict):
     trading_stocks = []
     for stock in raw_stocks:
