@@ -104,6 +104,32 @@ def Volatility(stock,end):
     else:
         return pd.Series(-1000, index = ['000001.XSHE'])
 
+#Factor from Fangzheng FE
+def filter_crossstar_stock(stock_list,enddate):
+    stock_list_1 = []
+    index_pr = history(240, '1m', 'close')['399905.XSHE']
+    index_t = history(2,'1d','close')['399905.XSHE'][0]
+    Ri = index_pr/index_t-1
+    for stk in stock_list:
+        stk_pr = history(240, '1m', 'close')[stk]
+        stk_t = history(2,'1d','close')[stk][0]
+        Rs = stk_pr/stk_t-1
+        Re = Rs - Ri
+        High = Re.max()
+        Low = Re.min()
+        Open = Re.ix[0]
+        Close = Re.ix[-1]
+        bar = abs(Re.ix[0]-Re.ix[-1])
+        if Open>Close:
+            upline = High - Open
+            downline = Close - Low
+        else:
+            upline = High - Close
+            downline = Open - Low
+        if bar < 0.001 and upline > bar*3 and downline > bar*3:
+            stock_list_1.append(stk)
+    return stock_list_1
+
 def sharpe(stock,end):
     start = "{:%Y-%m-%d}".format(datetime.datetime.strptime(end, '%Y-%m-%d') - datetime.timedelta(days=360))
     if len(stock) != 0 :
@@ -120,7 +146,20 @@ def sharpe(stock,end):
         return FactorValue
     else:
         return pd.Series(-1000, index = ['000001.XSHE'])
-        
+
+def CV90Day(stock,enddate): 
+    if len(stock) != 0 :
+        end = enddate
+        startdate = "{:%Y-%m-%d}".format(datetime.datetime.strptime(end, '%Y-%m-%d') - datetime.timedelta(days=110))
+        prices = get_price(list(stock), startdate, end_date=enddate, frequency='1d', fields=None)['OpeningPx']
+        #returns = np.log(prices/prices.shift(1)).iloc[1:-1]
+        CV = pd.Series()
+        for i in list(range(1,len(stock)+1)):
+            CV.loc[stock[i-1]] = np.std(prices[stock[i-1]])/np.mean(prices[stock[i-1]])
+        return CV
+    else:
+        return pd.Series(1000, index = ['000001.XSHE'])
+            
 ############################Define functions to get IC and Beta######################
 def GetIC(f,*args):
     FactorValue = f(*args)
@@ -288,7 +327,7 @@ def choose_stocks(context,bar_dict):
     index = '000016.XSHG'  #this is the index for hedging
     hedgingstocks = index_components(index)  #this is the stocks we use for hedging purpose
     
-    MyFactors = [RSIIndividual,Min130Day,EquitySize,EquityOCFP,PricetoLowest,sharpe]
+    MyFactors = [RSIIndividual,Min130Day,EquitySize,EquityOCFP,CV90Day,PricetoLowest,sharpe]
     Exposure = GetIndAllExp(hedgingstocks,end,MyFactors) #this is used for later hedging purpose
     
     AllStock = index_components('000300.XSHG') #this is the stock pool for selection
@@ -316,7 +355,8 @@ def choose_stocks(context,bar_dict):
         tempresidual = GetResiduals(stock,enddate,Xinput)
         ResidualAll = pd.concat([ResidualAll,tempresidual],axis = 1,join='outer')
     ResidualAll.columns = enddatel
-
+    #here the ResidualAll is nStocks * nDates, so we need to change to nDates * nStocks to compute stock individual variance
+    
     #########################Get Historical Cov for test purpose################
     #Get the Covariance Matrix of the Residuals
     ResidualCovh = ResidualAll.T.cov()
@@ -338,7 +378,6 @@ def choose_stocks(context,bar_dict):
     BetaCov = BetaCovh
     IndCov = ResidualCovh
     
-    print(IndCov)
     print(IndCov.shape)
     stock = IndCov.columns
 
@@ -349,6 +388,7 @@ def choose_stocks(context,bar_dict):
     f = np.asarray(GetAllBeta(stock,endb,MyFactors))
     x = GetAllFactorExposure(stock,endv,MyFactors)
     x = x.fillna(0).as_matrix()
+    #StockReturn is the expected return of all stocks in our pool
     StockReturn = np.matmul(x,f)
     #print(x.shape)
     FactorLoading = x
